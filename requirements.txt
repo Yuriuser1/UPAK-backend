@@ -1,0 +1,13 @@
+cat > requirements.txt << 'EOF'
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+Pillow
+reportlab
+requests
+firebase-admin
+gspread
+python-telegram-bot==20.3
+rembg
+EOF
