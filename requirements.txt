@@ -11,3 +11,5 @@ gspread
 python-telegram-bot==20.3
 rembg
 EOF
+yookassa
+oauth2client
