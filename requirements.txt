@@ -1,15 +1,12 @@
-cat > requirements.txt << 'EOF'
 fastapi
-uvicorn[standard]
-pydantic
-python-multipart
-Pillow
-reportlab
-requests
-firebase-admin
+uvicorn
+python-dotenv
+openai
 gspread
-python-telegram-bot==20.3
-rembg
-EOF
-yookassa
 oauth2client
+Pillow
+rembg
+python-telegram-bot==13.15
+firebase-admin
+reportlab
+yookassa
