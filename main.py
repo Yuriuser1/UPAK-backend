@@ -1,8 +1,17 @@
-```python
+import os
+import io
+import base64
+import logging
+
+from dotenv import load_dotenv
+load_dotenv()  # Должно идти ПЕРЕД использованием os.getenv
+
+import uuid
+
 from fastapi import FastAPI, Request, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
-import openai, io, base64, os, logging
+import openai
 import gspread
 from PIL import Image
 from rembg.bg import remove
@@ -15,6 +24,12 @@ import telegram
 import firebase_admin
 from firebase_admin import credentials, storage
 from uuid import uuid4
+from yookassa import Payment, Configuration
+
+# --- YOOKASSA НАСТРОЙКИ ---
+Configuration.account_id = os.getenv("YOOKASSA_SHOP_ID")
+Configuration.secret_key = os.getenv("YOOKASSA_SECRET_KEY")
+YOOKASSA_RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "https://upak.space/payment/success")
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +45,7 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 bot = telegram.Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 chat_id_template = os.getenv("TELEGRAM_CHAT_ID_TEMPLATE")
 
-# Безопасный секрет для вебхуков
+# Безопасный секрет для старого вебхука (если используешь)
 WEBHOOK_SECRET = os.getenv("PAYMENT_WEBHOOK_SECRET")
 
 # Инициализация Firebase
@@ -58,7 +73,94 @@ except Exception as e:
     logger.error(f"Google Sheets init error: {e}")
     raise
 
-# Модель запроса
+# --- ENDPOINT: СОЗДАНИЕ ПЛАТЕЖА через YooKassa ---
+class CreatePaymentRequest(BaseModel):
+    order_id: str
+    amount: float  # сумма в рублях
+    description: str
+    telegram_id: Optional[str] = None
+
+class CreatePaymentResponse(BaseModel):
+    payment_id: str
+    confirmation_url: str
+
+@app.post("/create_payment", response_model=CreatePaymentResponse)
+def create_payment(data: CreatePaymentRequest):
+    """
+    Создание платежа через YooKassa.
+    """
+    try:
+        payment = Payment.create({
+            "amount": {
+                "value": f"{data.amount:.2f}",
+                "currency": "RUB"
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": YOOKASSA_RETURN_URL
+            },
+            "capture": True,
+            "description": data.description,
+            "metadata": {
+                "order_id": data.order_id,
+                "telegram_id": data.telegram_id or ""
+            }
+        }, idempotency_key=str(uuid.uuid4()))
+        return {
+            "payment_id": payment.id,
+            "confirmation_url": payment.confirmation.confirmation_url
+        }
+    except Exception as e:
+        logger.error(f"YooKassa error: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка оплаты (YooKassa)")
+
+# --- ENDPOINT: ПРИЕМ WEBHOOK ОТ YOOKASSA ---
+@app.post("/yookassa-webhook")
+async def yookassa_webhook(request: Request):
+    try:
+        payload = await request.json()
+        event = payload.get("event")
+        obj = payload.get("object", {})
+
+        if event == "payment.succeeded":
+            payment_id = obj.get("id")
+            metadata = obj.get("metadata", {})
+            order_id = metadata.get("order_id")
+            telegram_id = metadata.get("telegram_id")
+
+            # Обновить заказ в Google Sheets (поиск по order_id)
+            if order_id:
+                try:
+                    cell = sheet.find(order_id)
+                    # Пример: 10=payment_id, 11=pdf_url, 12=status
+                    sheet.update_cell(cell.row, 9, payment_id)   # payment_id
+                    sheet.update_cell(cell.row, 11, "paid")      # статус
+                    row = sheet.row_values(cell.row)
+                    pdf_url = row[9]  # проверь правильный столбец для pdf_url
+                except Exception as e:
+                    logger.error(f"Google Sheets update error: {e}")
+                    raise HTTPException(status_code=500, detail="Order not found in Google Sheets")
+            else:
+                logger.error("No order_id in webhook")
+                raise HTTPException(status_code=400, detail="No order_id in webhook")
+
+            # Уведомление в Telegram
+            if telegram_id and pdf_url:
+                try:
+                    bot.send_message(
+                        chat_id=int(telegram_id),
+                        text=f"Ваш заказ {order_id} оплачен! PDF: {pdf_url}"
+                    )
+                except Exception as e:
+                    logger.error(f"Telegram notify error: {e}")
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        raise HTTPException(status_code=500, detail="Webhook processing error")
+
+# --- Модель запроса заказа ---
 class OrderRequest(BaseModel):
     product_name: str
     product_features: str
@@ -178,7 +280,8 @@ async def create_order(data: OrderRequest):
                 ";".join(generated_image_urls),
                 data.payment_id or "",
                 pdf_url,
-                "waiting"
+                "waiting",
+                data.telegram_user_id or ""
             ])
         except Exception as e:
             logger.error(f"Google Sheets append error: {e}")
@@ -209,12 +312,12 @@ async def create_order(data: OrderRequest):
         logger.error(f"Unexpected error in /order: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+# --- (СТАРЫЙ ВАРИАНТ ДЛЯ ВАШЕГО СЕКРЕТА, НЕ ОБЯЗАТЕЛЬНО ---
 @app.post("/payment-confirm")
 async def payment_confirm(
     req: Request,
     x_upak_signature: str = Header(...)
 ):
-    # Проверка секрета
     if x_upak_signature != WEBHOOK_SECRET:
         logger.warning("Unauthorized payment-confirm attempt")
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -244,4 +347,3 @@ async def payment_confirm(
     except Exception as e:
         logger.error(f"Error in payment-confirm: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-```
