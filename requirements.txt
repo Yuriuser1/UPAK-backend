@@ -6,7 +6,7 @@ gspread
 oauth2client
 Pillow
 rembg
-python-telegram-bot==13.15
+python-telegram-bot==20.3
 firebase-admin
 reportlab
 yookassa
