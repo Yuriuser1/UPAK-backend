@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import openai
+import requests
 import gspread
 from PIL import Image
 from rembg.bg import remove
@@ -38,8 +39,13 @@ logger = logging.getLogger(__name__)
 # Инициализация приложения
 app = FastAPI()
 
-# Настройки OpenAI
+# Настройки OpenAI (для DALL-E)
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Настройки Yandex GPT
+YANDEX_GPT_API_KEY = os.getenv("YANDEX_GPT_API_KEY")
+YANDEX_GPT_FOLDER_ID = os.getenv("YANDEX_GPT_FOLDER_ID")
+YANDEX_GPT_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 
 # Телеграм-бот
 bot = telegram.Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
@@ -47,6 +53,36 @@ chat_id_template = os.getenv("TELEGRAM_CHAT_ID_TEMPLATE")
 
 # Безопасный секрет для старого вебхука (если используешь)
 WEBHOOK_SECRET = os.getenv("PAYMENT_WEBHOOK_SECRET")
+
+def generate_text_with_yandex_gpt(messages, max_tokens=600):
+    """
+    Генерация текста через Yandex GPT API
+    """
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Api-Key {YANDEX_GPT_API_KEY}"
+        }
+        
+        data = {
+            "modelUri": f"gpt://{YANDEX_GPT_FOLDER_ID}/yandexgpt-lite",
+            "completionOptions": {
+                "stream": False,
+                "temperature": 0.6,
+                "maxTokens": str(max_tokens)
+            },
+            "messages": messages
+        }
+        
+        response = requests.post(YANDEX_GPT_URL, headers=headers, json=data)
+        response.raise_for_status()
+        
+        result = response.json()
+        return result["result"]["alternatives"][0]["message"]["text"]
+        
+    except Exception as e:
+        logger.error(f"Yandex GPT API error: {e}")
+        raise HTTPException(status_code=500, detail="Error generating text with Yandex GPT")
 
 # Инициализация Firebase
 try:
@@ -175,7 +211,7 @@ async def create_order(data: OrderRequest):
         order_id = f"Z{sheet.row_count + 1:05d}"
         logger.info(f"Creating order {order_id}")
 
-        # Генерация текста через OpenAI
+        # Генерация текста через Yandex GPT
         messages = [
             {"role": "system", "content": "Вы создаёте карточку для WB/Ozon."},
             {"role": "user", "content": (
@@ -184,15 +220,10 @@ async def create_order(data: OrderRequest):
             )}
         ]
         try:
-            res = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                max_tokens=600
-            )
-            content = res.choices[0].message.content.strip()
+            content = generate_text_with_yandex_gpt(messages, 600)
             title, description = content.split("\n", 1)
         except Exception as e:
-            logger.error(f"OpenAI text generation error: {e}")
+            logger.error(f"Yandex GPT text generation error: {e}")
             raise HTTPException(status_code=500, detail="Error generating product text")
 
         # Обработка пользовательского изображения
