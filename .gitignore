@@ -5,3 +5,7 @@ __pycache__/
 uploads/
 pdfs/
 EOF
+upak.db
+*.db
+__pycache__/
+*.pyc
