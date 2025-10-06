@@ -9,6 +9,7 @@ load_dotenv()  # Должно идти ПЕРЕД использованием o
 import uuid
 
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 import openai
@@ -27,6 +28,10 @@ from firebase_admin import credentials, storage
 from uuid import uuid4
 from yookassa import Payment, Configuration
 
+# Импорт новых модулей для аутентификации
+from database import init_db
+from routers import auth_router
+
 # --- YOOKASSA НАСТРОЙКИ ---
 Configuration.account_id = os.getenv("YOOKASSA_SHOP_ID")
 Configuration.secret_key = os.getenv("YOOKASSA_SECRET_KEY")
@@ -37,7 +42,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Инициализация приложения
-app = FastAPI()
+app = FastAPI(title="UPAK Backend API", version="2.0.0")
+
+# Настройка CORS для фронтенда
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://upak.space",
+        "https://www.upak.space"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Инициализация базы данных
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+    logger.info("Database initialized")
+
+# Подключение роутеров аутентификации
+app.include_router(auth_router)
 
 # Настройки OpenAI (для DALL-E)
 openai.api_key = os.getenv("OPENAI_API_KEY")
